@@ -43,6 +43,7 @@ OptitrackDriverNode::OptitrackDriverNode()
   declare_parameter<std::string>("multicast_address", "000.000.000.000");
   declare_parameter<uint16_t>("server_command_port", 0);
   declare_parameter<uint16_t>("server_data_port", 0);
+  declare_parameter<std::vector<int64_t>>("rigid_body_ids", std::vector<int64_t>{});
 
   client = new NatNetClient();
   client->SetFrameReceivedCallback(process_frame_callback, this);
@@ -185,6 +186,67 @@ OptitrackDriverNode::process_frame(sFrameOfMocapData * data)
 
     mocap4r2_rigid_body_pub_->publish(msg_rb);
   }
+
+  // Per-body publishing: PoseStamped, Pose2D, and TF with OptiTrack Y-Z coordinate swap
+  rclcpp::Time stamp = now() - frame_delay;
+  for (int i = 0; i < data->nRigidBodies; i++) {
+    int body_id = data->RigidBodies[i].ID;
+    auto cfg_it = rigid_body_configs_.find(body_id);
+    if (cfg_it == rigid_body_configs_.end()) {
+      continue;
+    }
+    const RigidBodyConfig & cfg = cfg_it->second;
+
+    // Apply OptiTrack -> ROS coordinate transform.
+    // OptiTrack frame: +x=left, +y=up, +z=forward
+    // ROS frame:       +x=forward, +y=left, +z=up
+    double px = data->RigidBodies[i].z;
+    double py = data->RigidBodies[i].x;
+    double pz = data->RigidBodies[i].y;
+    double ox = data->RigidBodies[i].qz;
+    double oy = data->RigidBodies[i].qx;
+    double oz = data->RigidBodies[i].qy;
+    double ow = data->RigidBodies[i].qw;
+
+    if (cfg.publish_pose && pose_pubs_.count(body_id)) {
+      geometry_msgs::msg::PoseStamped pose_msg;
+      pose_msg.header.stamp = stamp;
+      pose_msg.header.frame_id = cfg.parent_frame_id;
+      pose_msg.pose.position.x = px;
+      pose_msg.pose.position.y = py;
+      pose_msg.pose.position.z = pz;
+      pose_msg.pose.orientation.x = ox;
+      pose_msg.pose.orientation.y = oy;
+      pose_msg.pose.orientation.z = oz;
+      pose_msg.pose.orientation.w = ow;
+      pose_pubs_[body_id]->publish(pose_msg);
+    }
+
+    if (cfg.publish_pose2d && pose2d_pubs_.count(body_id)) {
+      // Yaw from quaternion: atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))
+      double yaw = std::atan2(2.0 * (ow * oz + ox * oy), 1.0 - 2.0 * (oy * oy + oz * oz));
+      geometry_msgs::msg::Pose2D pose2d_msg;
+      pose2d_msg.x = px;
+      pose2d_msg.y = py;
+      pose2d_msg.theta = yaw;
+      pose2d_pubs_[body_id]->publish(pose2d_msg);
+    }
+
+    if (cfg.publish_tf && tf_broadcaster_) {
+      geometry_msgs::msg::TransformStamped tf_msg;
+      tf_msg.header.stamp = stamp;
+      tf_msg.header.frame_id = cfg.parent_frame_id;
+      tf_msg.child_frame_id = cfg.child_frame_id;
+      tf_msg.transform.translation.x = px;
+      tf_msg.transform.translation.y = py;
+      tf_msg.transform.translation.z = pz;
+      tf_msg.transform.rotation.x = ox;
+      tf_msg.transform.rotation.y = oy;
+      tf_msg.transform.rotation.z = oz;
+      tf_msg.transform.rotation.w = ow;
+      tf_broadcaster_->sendTransform(tf_msg);
+    }
+  }
 }
 
 using CallbackReturnT =
@@ -203,6 +265,19 @@ OptitrackDriverNode::on_configure(const rclcpp_lifecycle::State & state)
   mocap4r2_rigid_body_pub_ = create_publisher<mocap4r2_msgs::msg::RigidBodies>(
     "rigid_bodies", rclcpp::QoS(1000));
 
+  loadRigidBodyConfig();
+  for (auto const & [id, config] : rigid_body_configs_) {
+    if (config.publish_pose) {
+      pose_pubs_[id] = create_publisher<geometry_msgs::msg::PoseStamped>(
+        config.pose_topic, rclcpp::QoS(1000));
+    }
+    if (config.publish_pose2d) {
+      pose2d_pubs_[id] = create_publisher<geometry_msgs::msg::Pose2D>(
+        config.pose2d_topic, rclcpp::QoS(1000));
+    }
+  }
+  tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
+
   connect_optitrack();
 
   RCLCPP_INFO(get_logger(), "Configured!\n");
@@ -216,6 +291,8 @@ OptitrackDriverNode::on_activate(const rclcpp_lifecycle::State & state)
   (void)state;
   mocap4r2_markers_pub_->on_activate();
   mocap4r2_rigid_body_pub_->on_activate();
+  for (auto & [id, pub] : pose_pubs_) {pub->on_activate();}
+  for (auto & [id, pub] : pose2d_pubs_) {pub->on_activate();}
   RCLCPP_INFO(get_logger(), "Activated!\n");
 
   return ControlledLifecycleNode::on_activate(state);
@@ -227,6 +304,8 @@ OptitrackDriverNode::on_deactivate(const rclcpp_lifecycle::State & state)
   (void)state;
   mocap4r2_markers_pub_->on_deactivate();
   mocap4r2_rigid_body_pub_->on_deactivate();
+  for (auto & [id, pub] : pose_pubs_) {pub->on_deactivate();}
+  for (auto & [id, pub] : pose2d_pubs_) {pub->on_deactivate();}
   RCLCPP_INFO(get_logger(), "Deactivated!\n");
 
   return ControlledLifecycleNode::on_deactivate(state);
@@ -351,6 +430,59 @@ OptitrackDriverNode::initParameters()
   get_parameter<std::string>("multicast_address", multicast_address_);
   get_parameter<uint16_t>("server_command_port", server_command_port_);
   get_parameter<uint16_t>("server_data_port", server_data_port_);
+  get_parameter<std::vector<int64_t>>("rigid_body_ids", rigid_body_ids_);
+}
+
+void
+OptitrackDriverNode::loadRigidBodyConfig()
+{
+  rigid_body_configs_.clear();
+  if (rigid_body_ids_.empty()) {
+    RCLCPP_WARN(get_logger(), "rigid_body_ids not set — per-body PoseStamped/Pose2D/TF publishing disabled");
+    return;
+  }
+
+  for (int64_t id : rigid_body_ids_) {
+    std::string prefix = "body_" + std::to_string(id) + "_";
+    RigidBodyConfig cfg;
+
+    std::string pose_topic, pose2d_topic, child_frame, parent_frame;
+
+    // Declare and read per-body parameters
+    declare_parameter<std::string>(prefix + "pose_topic", "");
+    declare_parameter<std::string>(prefix + "pose2d_topic", "");
+    declare_parameter<std::string>(prefix + "child_frame_id", "");
+    declare_parameter<std::string>(prefix + "parent_frame_id", "");
+
+    get_parameter(prefix + "pose_topic", pose_topic);
+    get_parameter(prefix + "pose2d_topic", pose2d_topic);
+    get_parameter(prefix + "child_frame_id", child_frame);
+    get_parameter(prefix + "parent_frame_id", parent_frame);
+
+    if (!pose_topic.empty()) {
+      cfg.pose_topic = pose_topic;
+      cfg.publish_pose = true;
+    }
+    if (!pose2d_topic.empty()) {
+      cfg.pose2d_topic = pose2d_topic;
+      cfg.publish_pose2d = true;
+    }
+    if (!child_frame.empty() && !parent_frame.empty()) {
+      cfg.child_frame_id = child_frame;
+      cfg.parent_frame_id = parent_frame;
+      cfg.publish_tf = true;
+    }
+
+    rigid_body_configs_[static_cast<int>(id)] = cfg;
+    RCLCPP_INFO(
+      get_logger(),
+      "Rigid body %ld: pose=%s, pose2d=%s, tf=%s->%s",
+      id,
+      cfg.publish_pose ? cfg.pose_topic.c_str() : "disabled",
+      cfg.publish_pose2d ? cfg.pose2d_topic.c_str() : "disabled",
+      cfg.publish_tf ? cfg.parent_frame_id.c_str() : "disabled",
+      cfg.publish_tf ? cfg.child_frame_id.c_str() : "disabled");
+  }
 }
 
 }  // namespace mocap4r2_optitrack_driver

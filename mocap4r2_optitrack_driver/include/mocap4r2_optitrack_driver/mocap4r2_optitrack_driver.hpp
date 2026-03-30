@@ -29,6 +29,7 @@
 #include <chrono>
 #include <vector>
 #include <optional>
+#include <cmath>
 
 #include "rclcpp/time.hpp"
 
@@ -39,6 +40,8 @@
 
 #include "std_msgs/msg/empty.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "geometry_msgs/msg/pose2_d.hpp"
+#include "geometry_msgs/msg/transform_stamped.hpp"
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/node_interfaces/node_logging.hpp"
@@ -59,6 +62,17 @@
 
 namespace mocap4r2_optitrack_driver
 {
+
+struct RigidBodyConfig
+{
+  std::string pose_topic;
+  std::string pose2d_topic;
+  std::string child_frame_id;
+  std::string parent_frame_id;
+  bool publish_pose{false};
+  bool publish_pose2d{false};
+  bool publish_tf{false};
+};
 
 class OptitrackDriverNode : public mocap4r2_control::ControlledLifecycleNode
 {
@@ -81,6 +95,7 @@ public:
   void set_settings_optitrack();
   bool stop_optitrack();
   void initParameters();
+  void loadRigidBodyConfig();
 
   void process_frame(sFrameOfMocapData * data);
 
@@ -103,10 +118,19 @@ protected:
   rclcpp_lifecycle::LifecyclePublisher<mocap4r2_msgs::msg::RigidBodies>::SharedPtr
     mocap4r2_rigid_body_pub_;
 
+  // Per-body publishers (keyed by OptiTrack rigid body ID)
+  std::map<int, rclcpp_lifecycle::LifecyclePublisher<
+      geometry_msgs::msg::PoseStamped>::SharedPtr> pose_pubs_;
+  std::map<int, rclcpp_lifecycle::LifecyclePublisher<
+      geometry_msgs::msg::Pose2D>::SharedPtr> pose2d_pubs_;
+  std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+  std::map<int, RigidBodyConfig> rigid_body_configs_;
+
   std::string connection_type_;
   std::string server_address_;
   std::string local_address_;
   std::string multicast_address_;
+  std::vector<int64_t> rigid_body_ids_;
   uint16_t server_command_port_;
   uint16_t server_data_port_;
 
