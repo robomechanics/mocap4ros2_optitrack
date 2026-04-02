@@ -129,7 +129,10 @@ OptitrackDriverNode::process_frame(sFrameOfMocapData * data)
   }
 
   frame_number_++;
-  rclcpp::Duration frame_delay = rclcpp::Duration(get_optitrack_system_latency(data));
+  // rclcpp::Duration frame_delay = rclcpp::Duration(get_optitrack_system_latency(data));
+  rclcpp::Duration frame_delay = rclcpp::Duration(0, 0);  // Use now() only, matching ROS1 behavior
+
+
 
   std::map<int, std::vector<mocap4r2_msgs::msg::Marker>> marker2rb;
 
@@ -398,6 +401,7 @@ OptitrackDriverNode::connect_optitrack()
     } else {
       RCLCPP_DEBUG(get_logger(), "Error getting frame rate.\n");
     }
+
   } else {
     RCLCPP_INFO(get_logger(), "... not connected :( ");
     return false;
