@@ -133,7 +133,6 @@ OptitrackDriverNode::process_frame(sFrameOfMocapData * data)
   rclcpp::Duration frame_delay = rclcpp::Duration(0, 0);  // Use now() only, matching ROS1 behavior
 
 
-
   std::map<int, std::vector<mocap4r2_msgs::msg::Marker>> marker2rb;
 
   // Markers
@@ -294,8 +293,12 @@ OptitrackDriverNode::on_activate(const rclcpp_lifecycle::State & state)
   (void)state;
   mocap4r2_markers_pub_->on_activate();
   mocap4r2_rigid_body_pub_->on_activate();
-  for (auto & [id, pub] : pose_pubs_) {pub->on_activate();}
-  for (auto & [id, pub] : pose2d_pubs_) {pub->on_activate();}
+  for (auto & [id, pub] : pose_pubs_) {
+    pub->on_activate();
+  }
+  for (auto & [id, pub] : pose2d_pubs_) {
+    pub->on_activate();
+  }
   RCLCPP_INFO(get_logger(), "Activated!\n");
 
   return ControlledLifecycleNode::on_activate(state);
@@ -307,8 +310,12 @@ OptitrackDriverNode::on_deactivate(const rclcpp_lifecycle::State & state)
   (void)state;
   mocap4r2_markers_pub_->on_deactivate();
   mocap4r2_rigid_body_pub_->on_deactivate();
-  for (auto & [id, pub] : pose_pubs_) {pub->on_deactivate();}
-  for (auto & [id, pub] : pose2d_pubs_) {pub->on_deactivate();}
+  for (auto & [id, pub] : pose_pubs_) {
+    pub->on_deactivate();
+  }
+  for (auto & [id, pub] : pose2d_pubs_) {
+    pub->on_deactivate();
+  }
   RCLCPP_INFO(get_logger(), "Deactivated!\n");
 
   return ControlledLifecycleNode::on_deactivate(state);
@@ -442,7 +449,8 @@ OptitrackDriverNode::loadRigidBodyConfig()
 {
   rigid_body_configs_.clear();
   if (rigid_body_ids_.empty()) {
-    RCLCPP_WARN(get_logger(), "rigid_body_ids not set — per-body PoseStamped/Pose2D/TF publishing disabled");
+    RCLCPP_WARN(get_logger(),
+        "rigid_body_ids not set — per-body PoseStamped/Pose2D/TF publishing disabled");
     return;
   }
 
